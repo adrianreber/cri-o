@@ -52,8 +52,11 @@ const (
 	SpecDumpFile        = "spec.dump"
 	NetworkStatusFile   = "network.status"
 	CheckpointDirectory = "checkpoint"
+	DevShmCheckpointTar = "devshm-checkpoint.tar"
 	RootFsDiffTar       = "rootfs-diff.tar"
 	DeletedFilesFile    = "deleted.files"
+	DumpLogFile         = "dump.log"
+	RestoreLogFile      = "restore.log"
 	// pod archive
 	PodOptionsFile = "pod.options"
 	PodDumpFile    = "pod.dump"
