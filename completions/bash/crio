@@ -43,6 +43,7 @@ h
 --default-transport
 --default-ulimits
 --device-ownership-from-security-context
+--disable-criu-support
 --drop-infra-ctr
 --enable-metrics
 --enable-profile-unix-socket

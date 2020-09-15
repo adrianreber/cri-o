@@ -408,6 +408,11 @@ func initCrioTemplateConfig(c *Config) ([]*templateConfigValue, error) {
 			isDefaultValue: simpleEqual(dc.PinnsPath, c.PinnsPath),
 		},
 		{
+			templateString: templateStringCrioRuntimeDisableCriuSupport,
+			group:          crioRuntimeConfig,
+			isDefaultValue: simpleEqual(dc.DisableCriuSupport, c.DisableCriuSupport),
+		},
+		{
 			templateString: templateStringCrioRuntimeDefaultRuntime,
 			group:          crioRuntimeConfig,
 			isDefaultValue: simpleEqual(dc.DefaultRuntime, c.DefaultRuntime),
@@ -1036,7 +1041,14 @@ const templateStringCrioRuntimePinnsPath = `# pinns_path is the path to find the
 
 `
 
+const templateStringCrioRuntimeDisableCriuSupport = `# Globally disable CRIU support which is necessary to
+# checkpoint and restore container or pods (even if CRIU is found in $PATH).
+{{ $.Comment }}disable_criu_support = {{ .DisableCriuSupport }}
+
+`
+
 const templateStringCrioRuntimeDefaultRuntime = `# default_runtime is the _name_ of the OCI runtime to be used as the default.
+# default_runtime is the _name_ of the OCI runtime to be used as the default.
 # The name is matched against the runtimes map below. If this value is changed,
 # the corresponding existing entry from the runtimes map below will be ignored.
 {{ $.Comment }}default_runtime = "{{ .DefaultRuntime }}"

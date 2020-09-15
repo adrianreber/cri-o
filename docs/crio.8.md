@@ -41,6 +41,7 @@ crio
 [--default-transport]=[value]
 [--default-ulimits]=[value]
 [--device-ownership-from-security-context]
+[--disable-criu-support]
 [--drop-infra-ctr]
 [--enable-metrics]
 [--enable-profile-unix-socket]
@@ -203,6 +204,8 @@ crio [GLOBAL OPTIONS] command [COMMAND OPTIONS] [ARGUMENTS...]
 **--default-ulimits**="": Ulimits to apply to containers by default (name=soft:hard) (default: []) (default: [])
 
 **--device-ownership-from-security-context**: Set devices' uid/gid ownership from runAsUser/runAsGroup
+
+**--disable-criu-support**: Disable CRIU integration even if the criu binary is found in $PATH.
 
 **--drop-infra-ctr**: Determines whether pods are created without an infra container, when the pod is not using a pod level PID namespace (default: true)
 

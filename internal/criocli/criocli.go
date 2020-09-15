@@ -279,6 +279,9 @@ func mergeConfig(config *libconfig.Config, ctx *cli.Context) error {
 	if ctx.IsSet("container-exits-dir") {
 		config.ContainerExitsDir = ctx.String("container-exits-dir")
 	}
+	if ctx.IsSet("disable-criu-support") {
+		config.DisableCriuSupport = ctx.Bool("disable-criu-support")
+	}
 	if ctx.IsSet("ctr-stop-timeout") {
 		config.CtrStopTimeout = ctx.Int64("ctr-stop-timeout")
 	}
@@ -1011,6 +1014,11 @@ func getCrioFlags(defConf *libconfig.Config) []cli.Flag {
 			Value:   defConf.StatsCollectionPeriod,
 			Usage:   "The number of seconds between collecting pod and container stats. If set to 0, the stats are collected on-demand instead.",
 			EnvVars: []string{"CONTAINER_STATS_COLLECTION_PERIOD"},
+		},
+		&cli.BoolFlag{
+			Name:    "disable-criu-support",
+			Usage:   "Disable CRIU integration even if the criu binary is found in $PATH.",
+			EnvVars: []string{"CONTAINER_DISABLE_CRIU_SUPPORT"},
 		},
 	}
 }
