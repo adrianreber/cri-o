@@ -663,6 +663,8 @@ func (s *Server) runPodSandbox(ctx context.Context, req *types.RunPodSandboxRequ
 		return nil, err
 	}
 
+	sb.SetDNSConfig(sbox.Config().DnsConfig)
+
 	if err := s.addSandbox(sb); err != nil {
 		return nil, err
 	}
