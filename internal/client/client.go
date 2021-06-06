@@ -30,22 +30,22 @@ type crioClientImpl struct {
 	crioSocketPath string
 }
 
-func configureUnixTransport(tr *http.Transport, proto, addr string) error {
+func configureUnixTransport(tr *http.Transport, proto, addr string, timeout time.Duration) error {
 	if len(addr) > maxUnixSocketPathSize {
 		return fmt.Errorf("unix socket path %q is too long", addr)
 	}
 	// No need for compression in local communications.
 	tr.DisableCompression = true
 	tr.DialContext = func(_ context.Context, _, _ string) (net.Conn, error) {
-		return net.DialTimeout(proto, addr, 32*time.Second)
+		return net.DialTimeout(proto, addr, timeout)
 	}
 	return nil
 }
 
 // New returns a crio client
-func New(crioSocketPath string) (CrioClient, error) {
+func New(crioSocketPath string, timeout time.Duration) (CrioClient, error) {
 	tr := new(http.Transport)
-	if err := configureUnixTransport(tr, "unix", crioSocketPath); err != nil {
+	if err := configureUnixTransport(tr, "unix", crioSocketPath, timeout); err != nil {
 		return nil, err
 	}
 	c := &http.Client{

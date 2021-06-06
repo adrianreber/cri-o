@@ -28,4 +28,4 @@ h
     return 0
 }
 
-complete -F _cli_bash_autocomplete crio-status
+complete -F _cli_bash_autocomplete crioctl

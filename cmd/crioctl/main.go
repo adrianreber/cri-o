@@ -3,30 +3,40 @@ package main
 import (
 	"fmt"
 	"os"
+	"path/filepath"
+	"sort"
 	"strings"
+	"time"
 
 	"github.com/cri-o/cri-o/internal/client"
 	"github.com/cri-o/cri-o/internal/criocli"
 	"github.com/cri-o/cri-o/internal/version"
+	"github.com/sirupsen/logrus"
 	"github.com/urfave/cli/v2"
 )
 
 const (
-	defaultSocket = "/var/run/crio/crio.sock"
-	idArg         = "id"
-	socketArg     = "socket"
+	defaultSocket  = "/var/run/crio/crio.sock"
+	idArg          = "id"
+	socketArg      = "socket"
+	defaultTimeout = 32
+	timeoutArg     = "timeout"
+	debugArg       = "debug"
 )
 
 func main() {
 	app := cli.NewApp()
-	app.Name = "crio-status"
+	app.Name = filepath.Base(os.Args[0])
 	app.Authors = []*cli.Author{{Name: "The CRI-O Maintainers"}}
-	app.Usage = "A tool for CRI-O status retrieval"
+	app.Usage = "A tool for CRI-O interaction"
 	app.Description = app.Usage
 	app.Version = version.Get().Version
 	app.CommandNotFound = func(*cli.Context, string) { os.Exit(1) }
 	app.OnUsageError = func(c *cli.Context, e error, b bool) error { return e }
 	app.Action = func(c *cli.Context) error {
+		if err := cli.ShowAppHelp(c); err != nil {
+			return err
+		}
 		return fmt.Errorf("expecting a valid subcommand")
 	}
 
@@ -37,6 +47,16 @@ func main() {
 			Usage:     "absolute path to the unix socket",
 			Value:     defaultSocket,
 			TakesFile: true,
+		},
+		&cli.DurationFlag{
+			Name:  timeoutArg,
+			Usage: "Timeout of connecting to server",
+			Value: defaultTimeout * time.Second,
+		},
+		&cli.BoolFlag{
+			Aliases: []string{"d"},
+			Name:    debugArg,
+			Usage:   "Enable debug output",
 		},
 	}
 	app.Commands = criocli.DefaultCommands
@@ -61,6 +81,21 @@ func main() {
 		Name:    "info",
 		Usage:   "Retrieve generic information about CRI-O, like the cgroup and storage driver.",
 	}}...)
+
+	app.Commands = append(app.Commands, []*cli.Command{
+		&checkpointCommand,
+		&restoreCommand,
+	}...)
+	sort.Sort(cli.FlagsByName(checkpointCommand.Flags))
+	sort.Sort(cli.CommandsByName(app.Commands))
+	sort.Sort(cli.FlagsByName(app.Flags))
+
+	app.Before = func(c *cli.Context) error {
+		if c.Bool("debug") {
+			logrus.SetLevel(logrus.DebugLevel)
+		}
+		return nil
+	}
 
 	if err := app.Run(os.Args); err != nil {
 		fmt.Fprintln(os.Stderr, err)
@@ -152,5 +187,5 @@ func info(c *cli.Context) error {
 }
 
 func crioClient(c *cli.Context) (client.CrioClient, error) {
-	return client.New(c.String(socketArg))
+	return client.New(c.String(socketArg), c.Duration(timeoutArg))
 }

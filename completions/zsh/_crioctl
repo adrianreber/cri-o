@@ -35,4 +35,4 @@ _cli_zsh_autocomplete() {
   return
 }
 
-compdef _cli_zsh_autocomplete crio-status
+compdef _cli_zsh_autocomplete crioctl
