@@ -185,6 +185,9 @@ bin/crio: $(GO_FILES) .gopathok
 bin/crio-status: $(GO_FILES) .gopathok
 	$(GO_BUILD) $(GCFLAGS) $(GO_LDFLAGS) -tags "$(BUILDTAGS)" -o $@ $(PROJECT)/cmd/crio-status
 
+bin/crioctl: $(GO_FILES) .gopathok
+	$(GO_BUILD) $(GCFLAGS) $(GO_LDFLAGS) -tags "$(BUILDTAGS)" -o $@ $(PROJECT)/cmd/crioctl
+
 build-static:
 	$(CONTAINER_RUNTIME) run --rm --privileged -ti -v /:/mnt \
 		$(NIX_IMAGE) cp -rfT /nix /mnt/nix
@@ -394,7 +397,7 @@ codecov:
 localintegration: clean binaries test-binaries
 	./test/test_runner.sh ${TESTFLAGS}
 
-binaries: bin/crio bin/crio-status bin/pinns
+binaries: bin/crio bin/crio-status bin/pinns bin/crioctl
 test-binaries: test/copyimg/copyimg test/checkseccomp/checkseccomp test/checkcriu/checkcriu
 
 MANPAGES_MD := $(wildcard docs/*.md)
