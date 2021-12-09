@@ -55,6 +55,8 @@ ZEITGEIST := ${BUILD_BIN_PATH}/zeitgeist
 SHFMT := ${BUILD_BIN_PATH}/shfmt
 SHELLCHECK := ${BUILD_BIN_PATH}/shellcheck
 BATS_FILES := $(wildcard test/*.bats)
+PROTOC_GEN_GO := ${BUILD_BIN_PATH}/protoc-gen-go
+PROTOC_GEN_GO_GRPC := ${BUILD_BIN_PATH}/protoc-gen-go-grpc
 
 ifeq ($(shell bash -c '[[ `command -v git` && `git rev-parse --git-dir 2>/dev/null` ]] && echo true'), true)
 	COMMIT_NO := $(shell git rev-parse HEAD 2> /dev/null || true)
@@ -71,6 +73,8 @@ CROSS_BUILD_TARGETS := \
 	bin/crio.cross.windows.amd64 \
 	bin/crio.cross.darwin.amd64 \
 	bin/crio.cross.linux.amd64
+
+INTERNAL_CRI_SOURCE := pkg/private/api.proto
 
 # If GOPATH not specified, use one in the local directory
 ifeq ($(GOPATH),)
@@ -188,6 +192,14 @@ build-static:
 
 release-bundle: clean bin/pinns build-static docs crio.conf bundle
 
+private-cri: $(PROTOC_GEN_GO) $(PROTOC_GEN_GO_GRPC)
+	protoc --plugin=protoc-gen-go=$(PROTOC_GEN_GO) \
+		--plugin=protoc-gen-go-grpc=$(PROTOC_GEN_GO_GRPC) \
+		--go_out=. --go_opt=paths=source_relative \
+		--go-grpc_out=. --go-grpc_opt=paths=source_relative \
+		--go-grpc_opt=require_unimplemented_servers=false \
+		$(INTERNAL_CRI_SOURCE)
+
 crio.conf: bin/crio
 	./bin/crio -d "" --config="" $(CONF_OVERRIDES) config > crio.conf
 
@@ -260,6 +272,12 @@ ${GO_MOD_OUTDATED}:
 
 ${ZEITGEIST}:
 	$(call go-build,./vendor/sigs.k8s.io/zeitgeist)
+
+${PROTOC_GEN_GO}:
+	$(call go-build,./vendor/google.golang.org/protobuf/cmd/protoc-gen-go)
+
+${PROTOC_GEN_GO_GRPC}:
+	$(call go-build,./vendor/google.golang.org/grpc/cmd/protoc-gen-go-grpc)
 
 ${GOLANGCI_LINT}:
 	export VERSION=v1.44.0 \
@@ -546,4 +564,5 @@ metrics-exporter: bin/metrics-exporter
 	release \
 	get-script \
 	check-log-lines \
-	verify-dependencies
+	verify-dependencies \
+	private-cri

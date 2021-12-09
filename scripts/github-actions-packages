@@ -18,6 +18,7 @@ sudo apt install -y \
     libseccomp-dev \
     libsystemd-dev \
     libudev-dev \
+    protobuf-compiler \
     sed \
     socat \
     uuid-dev
