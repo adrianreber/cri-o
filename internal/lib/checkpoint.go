@@ -4,16 +4,23 @@ import (
 	"context"
 	"fmt"
 	"io"
+	"io/ioutil"
 	"os"
+	"path"
 	"path/filepath"
+	"strings"
 
 	metadata "github.com/checkpoint-restore/checkpointctl/lib"
 	"github.com/checkpoint-restore/go-criu/v5/stats"
+	"github.com/containers/buildah"
+	istorage "github.com/containers/image/v5/storage"
 	"github.com/containers/podman/v3/libpod"
 	"github.com/containers/podman/v3/pkg/annotations"
 	"github.com/containers/podman/v3/pkg/checkpoint/crutils"
 	"github.com/containers/storage/pkg/archive"
 	"github.com/cri-o/cri-o/internal/oci"
+	"github.com/cri-o/cri-o/internal/version"
+	crioann "github.com/cri-o/cri-o/pkg/annotations"
 	rspec "github.com/opencontainers/runtime-spec/specs-go"
 	"github.com/opencontainers/runtime-tools/generate"
 	"github.com/pkg/errors"
@@ -25,6 +32,22 @@ type ContainerCheckpointRestoreOptions struct {
 	Pod       string
 
 	libpod.ContainerCheckpointOptions
+}
+
+func addCheckpointImageMetadata(importBuilder *buildah.Builder, ctr *oci.Container) {
+	// Add image annotations with information about the container and the host.
+	// This information is useful to check compatibility before restoring the checkpoint
+	checkpointImageAnnotations := map[string]string{
+		crioann.CheckpointAnnotationName:            ctr.Name(),
+		crioann.CheckpointAnnotationRawImageName:    ctr.ImageName(),
+		crioann.CheckpointAnnotationRootfsImageID:   ctr.ImageRef(),
+		crioann.CheckpointAnnotationRootfsImageName: ctr.ImageName(),
+		crioann.CheckpointAnnotationCRIOVersion:     version.Get().Version,
+	}
+
+	for key, value := range checkpointImageAnnotations {
+		importBuilder.SetAnnotation(key, value)
+	}
 }
 
 // ContainerCheckpoint checkpoints a running container.
@@ -55,12 +78,64 @@ func (c *ContainerServer) ContainerCheckpoint(ctx context.Context, opts *Contain
 		return "", errors.Wrapf(err, "failed to checkpoint container %s", ctr.ID())
 	}
 	if opts.TargetFile != "" {
-		if err := c.exportCheckpoint(ctr, specgen.Config, opts.TargetFile); err != nil {
-			return "", errors.Wrapf(err, "failed to write file system changes of container %s", ctr.ID())
+		logrus.Debugf("Trying to save the checkpoint as %s\n", opts.TargetFile)
+		if strings.HasPrefix(opts.TargetFile, "/") || !strings.Contains(opts.TargetFile, "/") {
+			if err := c.exportCheckpoint(ctr, specgen.Config, opts.TargetFile); err != nil {
+				return "", errors.Wrapf(err, "failed to write file system changes of container %s", ctr.ID())
+			}
+		} else {
+			// Create a checkpoint image in the local image store
+			imageRef, err := istorage.Transport.ParseStoreReference(c.store, opts.TargetFile)
+			if err != nil {
+				return "", errors.Wrapf(err, "failed to parse image name: %s", opts.TargetFile)
+			}
+			importBuilder, err := buildah.NewBuilder(
+				ctx,
+				c.store,
+				buildah.BuilderOptions{
+					// Build an image scratch
+					FromImage: "scratch",
+				},
+			)
+			if err != nil {
+				return "", err
+			}
+			// Clean-up buildah working container
+			defer importBuilder.Delete()
+			// Export checkpoint into temporary tar file
+			tmpDir, err := ioutil.TempDir("", "checkpoint_image_")
+			if err != nil {
+				return "", err
+			}
+			defer os.RemoveAll(tmpDir)
+
+			targetFile := path.Join(tmpDir, "checkpoint.tar")
+			if err := c.exportCheckpoint(ctr, specgen.Config, targetFile); err != nil {
+				return "", errors.Wrapf(err, "failed to write file system changes of container %s", ctr.ID())
+			}
+
+			// Copy checkpoint from temporary tar file in the image
+			importBuilder.Add("", true, buildah.AddAndCopyOptions{}, targetFile)
+			addCheckpointImageMetadata(importBuilder, ctr)
+
+			// Create checkpoint image
+			id, _, _, err := importBuilder.Commit(
+				ctx,
+				imageRef,
+				buildah.CommitOptions{
+					Squash: true,
+				},
+			)
+			if err != nil {
+				return "", err
+			}
+			logrus.Debugf("Created checkpoint image: %s", id)
 		}
 	}
-	if err := c.storageRuntimeServer.StopContainer(ctr.ID()); err != nil {
-		return "", errors.Wrapf(err, "failed to unmount container %s", ctr.ID())
+	if !opts.KeepRunning {
+		if err := c.storageRuntimeServer.StopContainer(ctr.ID()); err != nil {
+			return "", errors.Wrapf(err, "failed to unmount container %s", ctr.ID())
+		}
 	}
 	if err := c.ContainerStateToDisk(ctx, ctr); err != nil {
 		logrus.Warnf("Unable to write containers %s state to disk: %v", ctr.ID(), err)

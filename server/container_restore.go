@@ -263,10 +263,10 @@ func (s *Server) CRImportCheckpoint(ctx context.Context, input, sbID string, cha
 		"/sys":               true,
 		"/sys/fs/cgroup":     true,
 		"/dev/shm":           true,
-		"/etc/resolv.conf":   true,
+		"/etc/resolv.conf":   false,
 		"/etc/hostname":      true,
 		"/run/secrets":       true,
-		"/run/.containerenv": true,
+		"/run/.containerenv": false,
 	}
 
 	for _, m := range dumpSpec.Mounts {
