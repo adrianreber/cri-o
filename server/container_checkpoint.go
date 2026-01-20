@@ -33,6 +33,8 @@ func (s *Server) CheckpointContainer(ctx context.Context, req *types.CheckpointC
 		// For the forensic container checkpointing use case we
 		// keep the container running after checkpointing it.
 		KeepRunning: true,
+		// Pause the container before checkpointing
+		Pause: true,
 	}
 
 	_, err = s.ContainerCheckpoint(ctx, config, opts)

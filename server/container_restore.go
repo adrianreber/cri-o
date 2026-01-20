@@ -51,6 +51,57 @@ func (s *Server) checkIfCheckpointOCIImage(ctx context.Context, input string) (*
 	return &status.ID, nil
 }
 
+// checkIfPodCheckpointOCIImage checks if the input refers to a pod checkpoint image.
+// It returns the StorageImageID, pod name, namespace, pod ID, and pod UID if it's a pod checkpoint, nil otherwise.
+func (s *Server) checkIfPodCheckpointOCIImage(ctx context.Context, input string) (*storage.StorageImageID, string, string, string, string, error) {
+	if input == "" {
+		return nil, "", "", "", "", nil
+	}
+
+	if _, err := os.Stat(input); err == nil {
+		return nil, "", "", "", "", nil
+	}
+
+	status, err := s.storageImageStatus(ctx, &types.ImageSpec{Image: input})
+	if err != nil {
+		return nil, "", "", "", "", err
+	}
+
+	if status == nil || status.Annotations == nil {
+		return nil, "", "", "", "", nil
+	}
+
+	// Check for pod checkpoint annotation
+	podName, ok := status.Annotations[metadata.CheckpointAnnotationPod]
+	if !ok {
+		return nil, "", "", "", "", nil
+	}
+
+	// Read pod namespace from annotations
+	podNamespace := status.Annotations[metadata.CheckpointAnnotationNamespace]
+	if podNamespace == "" {
+		// Default to "default" namespace if not found
+		podNamespace = "default"
+		log.Warnf(ctx, "Pod namespace annotation not found in checkpoint image, using default")
+	}
+
+	// Read old pod ID from annotations
+	oldPodID := status.Annotations[metadata.CheckpointAnnotationPodID]
+	if oldPodID == "" {
+		log.Warnf(ctx, "Pod ID annotation not found in checkpoint image")
+	}
+
+	// Read pod UID from annotations
+	podUID := status.Annotations[metadata.CheckpointAnnotationPodUID]
+	if podUID == "" {
+		log.Warnf(ctx, "Pod UID annotation not found in checkpoint image")
+	}
+
+	log.Debugf(ctx, "Found checkpoint of pod %v (namespace: %s, old ID: %s, UID: %s) in %v", podName, podNamespace, oldPodID, podUID, input)
+
+	return &status.ID, podName, podNamespace, oldPodID, podUID, nil
+}
+
 // taken from Podman.
 func (s *Server) CRImportCheckpoint(
 	ctx context.Context,
@@ -73,6 +124,11 @@ func (s *Server) CRImportCheckpoint(
 	createAnnotations := createConfig.GetAnnotations()
 	createLabels := createConfig.GetLabels()
 
+	// Check if inputImage is a directory (for pod checkpoint restore)
+	// If it's a directory, we can use it directly without mounting or extracting
+	fileInfo, statErr := os.Stat(inputImage)
+	isDirectory := statErr == nil && fileInfo.IsDir()
+
 	restoreStorageImageID, err := s.checkIfCheckpointOCIImage(ctx, inputImage)
 	if err != nil {
 		return "", err
@@ -80,7 +136,14 @@ func (s *Server) CRImportCheckpoint(
 
 	var restoreArchivePath string
 
-	if restoreStorageImageID != nil {
+	if isDirectory {
+		// Third method: Directory-based checkpoint (for pod restore)
+		// The checkpoint data is already available in a directory (from mounted pod checkpoint image)
+		log.Debugf(ctx, "Restoring from checkpoint directory %s", inputImage)
+		mountPoint = inputImage
+		restoreArchivePath = inputImage
+		// No cleanup needed since we don't own this directory
+	} else if restoreStorageImageID != nil {
 		systemCtx, err := s.contextForNamespace(sb.Metadata().GetNamespace())
 		if err != nil {
 			return "", fmt.Errorf("get context for namespace: %w", err)
