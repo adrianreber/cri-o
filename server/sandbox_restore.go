@@ -5,6 +5,7 @@ import (
 	"errors"
 	"os"
 	"path/filepath"
+	"strings"
 
 	metadata "github.com/checkpoint-restore/checkpointctl/lib"
 	"google.golang.org/grpc/codes"
@@ -134,6 +135,20 @@ func (s *Server) RestorePod(ctx context.Context, req *types.RestorePodRequest) (
 	// Now restore each container into the new sandbox
 	log.Infof(ctx, "Restoring %d containers into pod %s", len(checkpointedPodOptions.Containers), newPodID)
 
+	// Build a map of container name -> ContainerConfig from the request for quick lookup
+	containerConfigMap := make(map[string]*types.ContainerConfig)
+	if req.GetContainerConfigs() != nil {
+		log.Infof(ctx, "Processing %d container configs from RestorePodRequest", len(req.GetContainerConfigs()))
+		for _, cc := range req.GetContainerConfigs() {
+			if cc.GetMetadata() != nil && cc.GetMetadata().GetName() != "" {
+				containerConfigMap[cc.GetMetadata().GetName()] = cc
+				log.Debugf(ctx, "Mapped container config for container: %s", cc.GetMetadata().GetName())
+			}
+		}
+	} else {
+		log.Infof(ctx, "No container configs provided in RestorePodRequest")
+	}
+
 	var restoredContainers []string
 
 	for i, containerDirName := range checkpointedPodOptions.Containers {
@@ -146,6 +161,32 @@ func (s *Server) RestorePod(ctx context.Context, req *types.RestorePodRequest) (
 		}
 
 		log.Infof(ctx, "Restoring container %d/%d: %s (name: %s)", i+1, len(checkpointedPodOptions.Containers), containerConfig.ID, containerConfig.Name)
+
+		// Extract the simple container name from the CRI name format
+		// CRI name format: k8s_{containerName}_{podName}_{namespace}_{podUID}_{attempt}
+		// We need just the {containerName} part to match with the provided configs
+		var simpleContainerName string
+		if strings.HasPrefix(containerConfig.Name, "k8s_") {
+			parts := strings.SplitN(containerConfig.Name, "_", 3)
+			if len(parts) >= 2 {
+				simpleContainerName = parts[1]
+				log.Debugf(ctx, "Extracted simple name '%s' from CRI name '%s'", simpleContainerName, containerConfig.Name)
+			} else {
+				simpleContainerName = containerConfig.Name
+				log.Debugf(ctx, "Could not parse CRI name '%s', using as-is", containerConfig.Name)
+			}
+		} else {
+			simpleContainerName = containerConfig.Name
+		}
+
+		// Look up the ContainerConfig provided by kubelet for this container
+		var providedConfig *types.ContainerConfig
+		if cc, found := containerConfigMap[simpleContainerName]; found {
+			providedConfig = cc
+			log.Debugf(ctx, "Found provided ContainerConfig for container %s (simple name: %s)", containerConfig.Name, simpleContainerName)
+		} else {
+			log.Debugf(ctx, "No provided ContainerConfig found for container %s (simple name: %s)", containerConfig.Name, simpleContainerName)
+		}
 
 		// Construct a ContainerConfig for CRImportCheckpoint
 		// The Image field will point to the containerDir, which contains the checkpoint data
@@ -162,6 +203,30 @@ func (s *Server) RestorePod(ctx context.Context, req *types.RestorePodRequest) (
 				Resources:       &types.LinuxContainerResources{},
 				SecurityContext: &types.LinuxContainerSecurityContext{},
 			},
+		}
+
+		// Apply labels, annotations, and other metadata from the provided ContainerConfig
+		// These are critical for Kubernetes to identify and track the containers
+		if providedConfig != nil {
+			if providedConfig.GetLabels() != nil {
+				createConfig.Labels = providedConfig.GetLabels()
+				log.Debugf(ctx, "Applying %d labels to container %s", len(providedConfig.GetLabels()), containerConfig.Name)
+			}
+			if providedConfig.GetAnnotations() != nil {
+				createConfig.Annotations = providedConfig.GetAnnotations()
+				log.Debugf(ctx, "Applying %d annotations to container %s", len(providedConfig.GetAnnotations()), containerConfig.Name)
+			}
+		}
+
+		// Apply mounts from the provided ContainerConfig if available
+		if providedConfig != nil && providedConfig.GetMounts() != nil {
+			createConfig.Mounts = providedConfig.GetMounts()
+			log.Infof(ctx, "Applying %d mounts to container %s", len(providedConfig.GetMounts()), containerConfig.Name)
+			for idx, mount := range providedConfig.GetMounts() {
+				log.Debugf(ctx, "  Mount %d: %s -> %s (readonly: %v)", idx, mount.GetHostPath(), mount.GetContainerPath(), mount.GetReadonly())
+			}
+		} else {
+			log.Debugf(ctx, "No mounts to apply for container %s", containerConfig.Name)
 		}
 
 		// Call CRImportCheckpoint which will:

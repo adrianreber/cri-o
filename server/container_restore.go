@@ -389,11 +389,15 @@ func (s *Server) CRImportCheckpoint(
 	}
 
 	if len(missingMount) > 0 {
-		return "", fmt.Errorf(
-			"restoring %q expects following bind mounts defined (%s)",
-			inputImage,
-			strings.Join(missingMount, ","),
+		log.Debugf(ctx, "restoring %q expects following bind mounts defined (%s)",
+                        inputImage,
+                        strings.Join(missingMount, ","),
 		)
+//		return "", fmt.Errorf(
+//			"restoring %q expects following bind mounts defined (%s)",
+//			inputImage,
+//			strings.Join(missingMount, ","),
+//		)
 	}
 
 	sandboxConfig := &types.PodSandboxConfig{

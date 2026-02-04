@@ -529,30 +529,45 @@ func (c *ContainerServer) PodCheckpoint(
 	// Try to atomically freeze the entire pod at the parent cgroup level
 	// This may fail if the cgroup parent is "." or empty, in which case we'll
 	// fall back to pausing individual containers
-	var cgMgr cgroups.Manager
-	usePodLevelFreeze := false
+	cgMgr, usePodLevelFreeze := func() (cgroups.Manager, bool) {
+		if sb.CgroupParent() == "" || sb.CgroupParent() == "." {
+			log.Infof(ctx, "Cgroup parent is %q, will pause containers individually", sb.CgroupParent())
+			return nil, false
+		}
 
-	if sb.CgroupParent() != "" && sb.CgroupParent() != "." {
-		cgMgr, err = c.config.CgroupManager().SandboxCgroupManager(sb.CgroupParent(), sb.ID())
+		mgr, err := c.config.CgroupManager().SandboxCgroupManager(sb.CgroupParent(), sb.ID())
 		if err != nil {
 			log.Warnf(ctx, "Failed to get sandbox cgroup manager (will pause containers individually): %v", err)
-		} else {
-			// Atomically freeze the entire pod sandbox by freezing the parent cgroup.
-			// This freezes all containers in the pod simultaneously.
-			if err := cgMgr.Freeze(cgroups.Frozen); err != nil {
-				log.Warnf(ctx, "Failed to freeze pod sandbox at cgroup level (will pause containers individually): %v", err)
-			} else {
-				usePodLevelFreeze = true
-				log.Infof(ctx, "Successfully froze pod sandbox %s at cgroup level", sb.ID())
-			}
+			return nil, false
 		}
-	} else {
-		log.Infof(ctx, "Cgroup parent is %q, will pause containers individually", sb.CgroupParent())
-	}
+
+		// In theory his should be:
+
+		// Atomically freeze the entire pod sandbox by freezing the parent cgroup.
+		// This freezes all containers in the pod simultaneously.
+		// if err := mgr.Freeze(cgroups.Frozen); err != nil {
+		// 	log.Warnf(ctx, "Failed to freeze pod sandbox at cgroup level (will pause containers individually): %v", err)
+		//	return mgr, false
+		// }
+		//
+		// return mgr, true
+		// log.Infof(ctx, "Successfully froze pod sandbox %s at cgroup level", sb.ID())
+
+		// but this does not yet work in combination with CRIU.
+		// If CRIU is called from runc, runc will pass the cgroup of the
+		// container to CRIU and also set FreezeCgroup to true.
+		// If we are, however, freezing the container via the parent cgroup freezer
+		// this does not work because CRIU is unaware that the parent
+		// cgroup is already frozen and just hang in the parasite code
+		// because it is frozen. We need a solution in CRIU how to
+		// handle a frozen parent cgroup.
+		log.Infof(ctx, "Did not freeze pod sandbox %s at cgroup level (CRIU is not ready)", sb.ID())
+		return mgr, false
+	}()
 
 	defer func() {
 		// Unfreeze the sandbox if we're keeping it running and we froze at pod level
-		if usePodLevelFreeze && opts.LeaveRunning {
+		if usePodLevelFreeze && opts.LeaveRunning && cgMgr != nil {
 			if err := cgMgr.Freeze(cgroups.Thawed); err != nil {
 				log.Errorf(ctx, "Failed to unfreeze pod sandbox %s: %v", sb.ID(), err)
 			}
@@ -561,23 +576,31 @@ func (c *ContainerServer) PodCheckpoint(
 
 	// Pause all containers first (if not frozen at pod level)
 	// This ensures all containers are paused before any checkpointing starts
-	pausedContainers := make(map[string]bool)
-	if !usePodLevelFreeze {
+	pausedContainers, err := func() (map[string]bool, error) {
+		paused := make(map[string]bool)
+		if usePodLevelFreeze {
+			return paused, nil
+		}
+
 		for _, ctr := range containers {
 			log.Infof(ctx, "Pausing container %s before pod checkpoint", ctr.ID())
 			if err := c.runtime.PauseContainer(ctx, ctr); err != nil {
 				// Best effort unpause any already paused containers
-				for pausedID := range pausedContainers {
+				for pausedID := range paused {
 					if pausedCtr, err := c.LookupContainer(ctx, pausedID); err == nil {
 						if err := c.runtime.UnpauseContainer(ctx, pausedCtr); err != nil {
 							log.Errorf(ctx, "Failed to unpause container %s: %v", pausedID, err)
 						}
 					}
 				}
-				return "", fmt.Errorf("failed to pause container %s: %w", ctr.ID(), err)
+				return paused, fmt.Errorf("failed to pause container %s: %w", ctr.ID(), err)
 			}
-			pausedContainers[ctr.ID()] = true
+			paused[ctr.ID()] = true
 		}
+		return paused, nil
+	}()
+	if err != nil {
+		return "", err
 	}
 
 	// Defer unpausing all containers (if we paused them)

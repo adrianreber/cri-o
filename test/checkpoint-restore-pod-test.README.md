@@ -23,11 +23,9 @@ This script tests CRI-O's pod-level checkpoint and restore functionality. It cre
 sudo ./test/checkpoint-restore-pod-test.sh
 ```
 
-### Custom Test Image
-
-```bash
-sudo TEST_IMAGE=quay.io/crio/alpine:latest ./test/checkpoint-restore-pod-test.sh
-```
+The test uses two container images:
+- Container 1: `quay.io/adrianreber/wildfly-hello`
+- Container 2: `quay.io/adrianreber/counter`
 
 ## What the Script Does
 
@@ -43,8 +41,9 @@ sudo TEST_IMAGE=quay.io/crio/alpine:latest ./test/checkpoint-restore-pod-test.sh
 
 3. **Pod Creation**
    - Creates a test pod with unique UID
-   - Creates two containers in the pod
-   - Both containers write test files and sleep
+   - Creates two containers in the pod using different images:
+     - Container 1: `quay.io/adrianreber/wildfly-hello`
+     - Container 2: `quay.io/adrianreber/counter`
 
 4. **Checkpoint**
    - Waits for containers to be running
@@ -90,7 +89,8 @@ The script provides colored output:
 [INFO] CRI-O started with PID 12345
 [INFO] Waiting for CRI-O socket...
 [INFO] CRI-O socket ready
-[INFO] Pulling test image: quay.io/crio/busybox:latest
+[INFO] Pulling container 1 image: quay.io/adrianreber/wildfly-hello
+[INFO] Pulling container 2 image: quay.io/adrianreber/counter
 [INFO] === Testing Pod Checkpoint and Restore ===
 [INFO] Creating pod...
 [INFO] Pod created: abc123...

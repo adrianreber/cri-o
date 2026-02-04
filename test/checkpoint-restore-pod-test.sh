@@ -13,7 +13,8 @@ source "${SCRIPT_DIR}/common.sh"
 
 # Test-specific configuration
 CRIO_SOCKET="/var/run/crio/crio.sock"
-TEST_IMAGE="${TEST_IMAGE:-quay.io/crio/busybox:latest}"
+CONTAINER1_IMAGE="quay.io/adrianreber/wildfly-hello"
+CONTAINER2_IMAGE="quay.io/adrianreber/counter"
 CHECKPOINT_IMAGE="localhost/checkpoint-pod:test-$$"
 
 # Test state
@@ -184,6 +185,12 @@ check_prerequisites() {
         exit 1
     fi
 
+    # Check for curl
+    if ! command -v curl >/dev/null 2>&1; then
+        error "curl is required for testing containers"
+        exit 1
+    fi
+
     log "All prerequisites satisfied"
 }
 
@@ -232,10 +239,13 @@ EOF
     log "CRI-O socket ready"
 }
 
-# Pull test image
-pull_test_image() {
-    log "Pulling test image: ${TEST_IMAGE}"
-    "${CRICTL_BINARY}" pull "${TEST_IMAGE}"
+# Pull test images
+pull_test_images() {
+    log "Pulling container 1 image: ${CONTAINER1_IMAGE}"
+    "${CRICTL_BINARY}" pull "${CONTAINER1_IMAGE}"
+
+    log "Pulling container 2 image: ${CONTAINER2_IMAGE}"
+    "${CRICTL_BINARY}" pull "${CONTAINER2_IMAGE}"
 }
 
 # Create pod configuration
@@ -259,6 +269,7 @@ EOF
 # Create container configuration
 create_container_config() {
     local container_name="$1"
+    local container_image="$2"
     local config_file="${TEST_DIR}/${container_name}-config.json"
 
     cat > "${config_file}" <<EOF
@@ -267,13 +278,8 @@ create_container_config() {
         "name": "${container_name}"
     },
     "image": {
-        "image": "${TEST_IMAGE}"
+        "image": "${container_image}"
     },
-    "command": [
-        "/bin/sh",
-        "-c",
-        "echo 'Container ${container_name} started' > /tmp/${container_name}.txt && sleep 3600"
-    ],
     "log_path": "${container_name}.log",
     "linux": {}
 }
@@ -291,10 +297,10 @@ test_pod_checkpoint_restore() {
     pod_config="$(create_pod_config)"
 
     local container1_config
-    container1_config="$(create_container_config "container1")"
+    container1_config="$(create_container_config "container1" "${CONTAINER1_IMAGE}")"
 
     local container2_config
-    container2_config="$(create_container_config "container2")"
+    container2_config="$(create_container_config "container2" "${CONTAINER2_IMAGE}")"
 
     # Create pod
     log "Creating pod..."
@@ -342,6 +348,52 @@ test_pod_checkpoint_restore() {
 
     log "Both containers are running"
 
+    # Get pod IP address
+    local pod_ip
+    pod_ip=$("${CRICTL_BINARY}" inspectp --output go-template --template '{{.status.network.ip}}' "${POD_ID}")
+    log "Pod IP address: ${pod_ip}"
+
+    # Test wildfly-hello container
+    log "Testing wildfly-hello container at ${pod_ip}:8080/helloworld/..."
+    local wildfly_response=""
+    local count=0
+    local max_attempts=30
+    while [ ${count} -lt ${max_attempts} ]; do
+        wildfly_response=$(curl -s --max-time 2 "http://${pod_ip}:8080/helloworld/" 2>/dev/null || echo "")
+        if [[ "${wildfly_response}" =~ ^[0-9]+$ ]]; then
+            log "wildfly-hello responded with counter: ${wildfly_response}"
+            break
+        fi
+        count=$((count + 1))
+        sleep 1
+    done
+
+    if ! [[ "${wildfly_response}" =~ ^[0-9]+$ ]]; then
+        error "wildfly-hello did not respond correctly after ${max_attempts}s (response: ${wildfly_response})"
+        exit 1
+    fi
+
+    # Test counter container
+    log "Testing counter container at ${pod_ip}:8088/..."
+    local counter_response=""
+    count=0
+    while [ ${count} -lt ${max_attempts} ]; do
+        counter_response=$(curl -s --max-time 2 "http://${pod_ip}:8088/" 2>/dev/null || echo "")
+        if [[ "${counter_response}" =~ ^counter:\ [0-9]+$ ]]; then
+            log "counter responded with: ${counter_response}"
+            break
+        fi
+        count=$((count + 1))
+        sleep 1
+    done
+
+    if ! [[ "${counter_response}" =~ ^counter:\ [0-9]+$ ]]; then
+        error "counter did not respond correctly after ${max_attempts}s (response: ${counter_response})"
+        exit 1
+    fi
+
+    log "Both containers are responding correctly"
+
     # Checkpoint the pod
     log "Checkpointing pod to image: ${CHECKPOINT_IMAGE}"
     "${CRICTL_BINARY}" -t 20s checkpointp --export="${CHECKPOINT_IMAGE}" "${POD_ID}"
@@ -359,7 +411,28 @@ test_pod_checkpoint_restore() {
 
     # Inspect checkpoint image annotations
     log "Inspecting checkpoint image annotations..."
-    buildah inspect "${CHECKPOINT_IMAGE}" 2>/dev/null | jq -r '.OCIv1.config.Labels | to_entries[] | select(.key | startswith("org.criu.checkpoint")) | "\(.key)=\(.value)"' || true
+    local annotations_output
+    annotations_output=$(buildah inspect --format '{{range $key, $value := .ImageAnnotations}}  🏷️  {{$key}}={{$value}}{{println}}{{end}}' "${CHECKPOINT_IMAGE}" 2>/dev/null || echo "")
+
+    # Print all annotations
+    if [ -n "${annotations_output}" ]; then
+        echo "${annotations_output}"
+    fi
+
+    # Count org.criu annotations
+    local criu_count=0
+    if [ -n "${annotations_output}" ]; then
+        criu_count=$(echo "${annotations_output}" | grep -c "org\.criu\.checkpoint\." 2>/dev/null || echo "0")
+        # Remove any whitespace/newlines
+        criu_count=$(echo "${criu_count}" | tr -d '[:space:]')
+    fi
+
+    log "Found ${criu_count} CRIU checkpoint annotations"
+
+    if [ "${criu_count}" -lt 3 ]; then
+        error "Expected at least 3 org.criu annotations, found ${criu_count}"
+        exit 1
+    fi
 
     # Remove all pods
     log "Removing all pods..."
@@ -418,6 +491,82 @@ test_pod_checkpoint_restore() {
         log "Container ${name} (${ctr_id}) is running"
     done
 
+    # Get restored pod IP address
+    local restored_pod_ip
+    restored_pod_ip=$("${CRICTL_BINARY}" inspectp --output go-template --template '{{.status.network.ip}}' "${RESTORED_POD_ID}")
+    log "Restored pod IP address: ${restored_pod_ip}"
+
+    # Test restored wildfly-hello container
+    log "Testing restored wildfly-hello container at ${restored_pod_ip}:8080/helloworld/..."
+    local restored_wildfly_response=""
+    local count=0
+    local max_attempts=30
+    while [ ${count} -lt ${max_attempts} ]; do
+        restored_wildfly_response=$(curl -s --max-time 2 "http://${restored_pod_ip}:8080/helloworld/" 2>/dev/null || echo "")
+        if [[ "${restored_wildfly_response}" =~ ^[0-9]+$ ]]; then
+            log "Restored wildfly-hello responded with counter: ${restored_wildfly_response}"
+            break
+        fi
+        count=$((count + 1))
+        sleep 1
+    done
+
+    if ! [[ "${restored_wildfly_response}" =~ ^[0-9]+$ ]]; then
+        error "Restored wildfly-hello did not respond correctly after ${max_attempts}s (response: ${restored_wildfly_response})"
+        exit 1
+    fi
+
+    # Test restored counter container
+    log "Testing restored counter container at ${restored_pod_ip}:8088/..."
+    local restored_counter_response=""
+    count=0
+    while [ ${count} -lt ${max_attempts} ]; do
+        restored_counter_response=$(curl -s --max-time 2 "http://${restored_pod_ip}:8088/" 2>/dev/null || echo "")
+        if [[ "${restored_counter_response}" =~ ^counter:\ [0-9]+$ ]]; then
+            log "Restored counter responded with: ${restored_counter_response}"
+            break
+        fi
+        count=$((count + 1))
+        sleep 1
+    done
+
+    if ! [[ "${restored_counter_response}" =~ ^counter:\ [0-9]+$ ]]; then
+        error "Restored counter did not respond correctly after ${max_attempts}s (response: ${restored_counter_response})"
+        exit 1
+    fi
+
+    log "Both restored containers are responding correctly"
+
+    # Verify that counter values are incremented after restore
+    log "Verifying that counters are incremented after restore..."
+
+    # Extract numeric value from wildfly-hello responses
+    local wildfly_count_before="${wildfly_response}"
+    local wildfly_count_after="${restored_wildfly_response}"
+
+    # Extract numeric value from counter responses (format: "counter: X")
+    local counter_count_before
+    counter_count_before=$(echo "${counter_response}" | sed 's/counter: //')
+    local counter_count_after
+    counter_count_after=$(echo "${restored_counter_response}" | sed 's/counter: //')
+
+    log "wildfly-hello counter: before=${wildfly_count_before}, after=${wildfly_count_after}"
+    log "counter container: before=${counter_count_before}, after=${counter_count_after}"
+
+    # Verify wildfly-hello counter is incremented
+    if [ "${wildfly_count_after}" -le "${wildfly_count_before}" ]; then
+        error "wildfly-hello counter did not increment (before: ${wildfly_count_before}, after: ${wildfly_count_after})"
+        exit 1
+    fi
+    log "✓ wildfly-hello counter incremented from ${wildfly_count_before} to ${wildfly_count_after}"
+
+    # Verify counter container is incremented
+    if [ "${counter_count_after}" -le "${counter_count_before}" ]; then
+        error "counter container did not increment (before: ${counter_count_before}, after: ${counter_count_after})"
+        exit 1
+    fi
+    log "✓ counter container incremented from ${counter_count_before} to ${counter_count_after}"
+
     log "Pod checkpoint and restore test completed successfully!"
 }
 
@@ -428,11 +577,12 @@ main() {
     log "CRI-O binary: ${CRIO_BINARY_PATH}"
     log "crictl binary: ${CRICTL_BINARY}"
     log "pinns binary: ${PINNS_BINARY_PATH}"
-    log "Test image: ${TEST_IMAGE}"
+    log "Container 1 image: ${CONTAINER1_IMAGE}"
+    log "Container 2 image: ${CONTAINER2_IMAGE}"
 
     check_prerequisites
     start_crio
-    pull_test_image
+    pull_test_images
     test_pod_checkpoint_restore
 
     log "All tests passed!"
